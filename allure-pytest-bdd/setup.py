@@ -27,14 +27,12 @@ setup_requires = [
 install_requires = [
     "pytest>=4.5.0",
     "pytest-bdd>=3.0.0"
+    "allure-python-commons>=2.13.5"
 ]
 
 
 def prepare_version():
-    from setuptools_scm import get_version
     configuration = {"root": "..", "relative_to": __file__}
-    version = get_version(**configuration)
-    install_requires.append(f"allure-python-commons=={version}")
     return configuration
 
 

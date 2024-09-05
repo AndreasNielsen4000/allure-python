@@ -1,9 +1,11 @@
 import pytest
+import doctest
 import allure_commons
 from allure_commons.utils import now
 from allure_commons.utils import uuid4
 from allure_commons.model2 import Label
 from allure_commons.model2 import Status
+from allure_commons.model2 import TestResult
 
 from allure_commons.types import LabelType, AttachmentType
 from allure_commons.utils import platform_label
@@ -91,27 +93,51 @@ class PytestBDDListener:
     @pytest.hookimpl(hookwrapper=True)
     def pytest_runtest_makereport(self, item, call):
         report = (yield).get_result()
+        uuid = get_uuid(report.nodeid)
 
         status = get_pytest_report_status(report)
+        status_details = None
 
-        status_details = StatusDetails(
-            message=call.excinfo.exconly(),
-            trace=report.longreprtext) if call.excinfo else None
+        if call.excinfo:
+            message = call.excinfo.exconly()
+            if hasattr(report, 'wasxfail'):
+                reason = report.wasxfail
+                message = (f'XFAIL {reason}' if reason else 'XFAIL') + '\n\n' + message
+            trace = report.longreprtext
+            status_details = StatusDetails(
+                message=message,
+                trace=trace)
 
-        uuid = get_uuid(report.nodeid)
+            exception = call.excinfo.value
+            if (status != Status.SKIPPED and _exception_brokes_test(exception)):
+                status = Status.BROKEN
+
+        if status == Status.PASSED and hasattr(report, 'wasxfail'):
+            reason = report.wasxfail
+            message = f'XPASS {reason}' if reason else 'XPASS'
+            status_details = StatusDetails(message=message)
         with self.lifecycle.update_test_case(uuid=uuid) as test_result:
+
+            if test_result is None and status is not "passed":
+                new_test_result = TestResult()
+                new_test_result.uuid = uuid
+                new_test_result.name = report.head_line
+                new_test_result.status = status
+                new_test_result.statusDetails = status_details
+                self.lifecycle._items[uuid] = new_test_result
+                self.lifecycle.write_test_case(uuid=uuid)
 
             if test_result and report.when == "setup":
                 test_result.status = status
                 test_result.statusDetails = status_details
 
             if report.when == "call" and test_result:
-                if test_result.status not in [Status.PASSED, Status.FAILED]:
+                if test_result.status == Status.PASSED:
                     test_result.status = status
                     test_result.statusDetails = status_details
 
             if report.when == "teardown" and test_result:
-                if test_result.status == Status.PASSED and status != Status.PASSED:
+                if status in (Status.FAILED, Status.BROKEN) and test_result.status == Status.PASSED:
                     test_result.status = status
                     test_result.statusDetails = status_details
                 if report.caplog:
@@ -131,3 +157,11 @@ class PytestBDDListener:
     @allure_commons.hookimpl
     def attach_file(self, source, name, attachment_type, extension):
         self.lifecycle.attach_file(uuid4(), source, name=name, attachment_type=attachment_type, extension=extension)
+
+
+def _exception_brokes_test(exception):
+    return not isinstance(exception, (
+        AssertionError,
+        pytest.fail.Exception,
+        doctest.DocTestFailure
+    ))
